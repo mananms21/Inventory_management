@@ -95,18 +95,83 @@ def convert_data_types(df):
 def create_database_tables(conn, df):
     """Create necessary database tables"""
     
-    # Main inventory facts table
-    df.to_sql('inventory_facts', conn, if_exists='replace', index=False)
-    
-    # Create stores table
-    if 'Store_ID' in df.columns and 'Region' in df.columns:
-        stores_df = df[['Store_ID', 'Region']].drop_duplicates()
-        stores_df.to_sql('stores', conn, if_exists='replace', index=False)
-    
-    # Create products table
-    if 'Product_ID' in df.columns and 'Category' in df.columns:
-        products_df = df[['Product_ID', 'Category']].drop_duplicates()
-        products_df.to_sql('products', conn, if_exists='replace', index=False)
-    
-    # Create environment facts table
-    env_columns = ['Date',
+    try:
+        # Main inventory facts table
+        df.to_sql('inventory_facts', conn, if_exists='replace', index=False)
+        
+        # Create stores table
+        if 'Store_ID' in df.columns:
+            store_columns = ['Store_ID']
+            if 'Region' in df.columns:
+                store_columns.append('Region')
+            if 'Store_Name' in df.columns:
+                store_columns.append('Store_Name')
+            if 'City' in df.columns:
+                store_columns.append('City')
+            if 'State' in df.columns:
+                store_columns.append('State')
+                
+            stores_df = df[store_columns].drop_duplicates()
+            stores_df.to_sql('stores', conn, if_exists='replace', index=False)
+        
+        # Create products table
+        if 'Product_ID' in df.columns:
+            product_columns = ['Product_ID']
+            if 'Category' in df.columns:
+                product_columns.append('Category')
+            if 'Product_Name' in df.columns:
+                product_columns.append('Product_Name')
+            if 'Brand' in df.columns:
+                product_columns.append('Brand')
+            if 'Size' in df.columns:
+                product_columns.append('Size')
+                
+            products_df = df[product_columns].drop_duplicates()
+            products_df.to_sql('products', conn, if_exists='replace', index=False)
+        
+        # Create environment facts table
+        env_columns = ['Date', 'Store_ID']
+        optional_env_columns = ['Weather_Condition', 'Holiday_Promotion', 'Seasonality', 'Competitor_Pricing', 'Temperature', 'Day_of_Week']
+        
+        for col in optional_env_columns:
+            if col in df.columns:
+                env_columns.append(col)
+        
+        if len(env_columns) > 2:  # More than just Date and Store_ID
+            env_df = df[env_columns].drop_duplicates()
+            env_df.to_sql('environment_facts', conn, if_exists='replace', index=False)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error creating database tables: {str(e)}")
+        return False
+
+def get_table_info(conn):
+    """Get information about created tables"""
+    try:
+        tables = []
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        for table in cursor.fetchall():
+            table_name = table[0]
+            count_query = f"SELECT COUNT(*) FROM {table_name}"
+            count = conn.execute(count_query).fetchone()[0]
+            tables.append((table_name, count))
+        return tables
+    except Exception as e:
+        st.error(f"Error getting table info: {str(e)}")
+        return []
+
+def validate_database_structure(conn):
+    """Validate that the database was created correctly"""
+    try:
+        # Check if main table exists
+        result = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='inventory_facts';").fetchone()
+        if result:
+            return True
+        else:
+            st.error("Main inventory_facts table was not created")
+            return False
+    except Exception as e:
+        st.error(f"Error validating database: {str(e)}")
+        return False

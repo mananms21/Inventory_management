@@ -138,19 +138,6 @@ def setup_database(conn, df):
             env_df = df[env_columns].drop_duplicates()
             env_df.to_sql('environment_facts', conn, if_exists='replace', index=False)
         
-        # Create inventory facts table (this might be the same as main table or a subset)
-        inventory_columns = ['Date', 'Store_ID', 'Product_ID']
-        optional_inv_columns = ['Inventory_Level', 'Units_Sold', 'Units_Ordered', 'Price', 'Discount', 'Demand_Forecast', 'Cost', 'Lead_Time']
-        
-        for col in optional_inv_columns:
-            if col in df.columns:
-                inventory_columns.append(col)
-                
-        # If we have these core columns, create the inventory_facts table
-        if all(col in df.columns for col in ['Date', 'Store_ID', 'Product_ID']):
-            inventory_df = df[inventory_columns]
-            inventory_df.to_sql('inventory_facts', conn, if_exists='replace', index=False)
-        
         st.info(f"✅ Database setup complete. Created tables from {len(df)} records.")
         
         # Show table summary
@@ -205,28 +192,64 @@ def apply_filters(df, date_range=None, regions=None, categories=None):
     
     return filtered_df
 
-def get_filter_conditions(date_range=None, regions=None, categories=None):
-    """Generate SQL WHERE conditions based on filters"""
-    conditions = []
+def get_filter_conditions_with_joins(conn, date_range=None, regions=None, categories=None):
+    """Generate SQL FROM clause with JOINs and WHERE conditions based on filters"""
+    base_from = "inventory_facts i"
+    join_conditions = []
+    where_conditions = []
     
-    # Date filter
+    # Check if we need to join with stores table for region filter
+    if regions:
+        # Check if stores table exists
+        tables_query = "SELECT name FROM sqlite_master WHERE type='table' AND name='stores'"
+        stores_exists = run_sql_query(conn, tables_query)
+        
+        if not stores_exists.empty:
+            join_conditions.append("LEFT JOIN stores s ON i.Store_ID = s.Store_ID")
+            region_list = "', '".join(regions)
+            where_conditions.append(f"s.Region IN ('{region_list}')")
+        else:
+            # If stores table doesn't exist, check if Region is in inventory_facts
+            check_region_query = "PRAGMA table_info(inventory_facts)"
+            columns_info = run_sql_query(conn, check_region_query)
+            if not columns_info.empty and 'Region' in columns_info['name'].values:
+                region_list = "', '".join(regions)
+                where_conditions.append(f"i.Region IN ('{region_list}')")
+    
+    # Check if we need to join with products table for category filter
+    if categories:
+        # Check if products table exists
+        tables_query = "SELECT name FROM sqlite_master WHERE type='table' AND name='products'"
+        products_exists = run_sql_query(conn, tables_query)
+        
+        if not products_exists.empty:
+            join_conditions.append("LEFT JOIN products p ON i.Product_ID = p.Product_ID")
+            category_list = "', '".join(categories)
+            where_conditions.append(f"p.Category IN ('{category_list}')")
+        else:
+            # If products table doesn't exist, check if Category is in inventory_facts
+            check_category_query = "PRAGMA table_info(inventory_facts)"
+            columns_info = run_sql_query(conn, check_category_query)
+            if not columns_info.empty and 'Category' in columns_info['name'].values:
+                category_list = "', '".join(categories)
+                where_conditions.append(f"i.Category IN ('{category_list}')")
+    
+    # Date filter (assuming Date is in inventory_facts)
     if date_range and len(date_range) == 2:
         start_date, end_date = date_range
-        conditions.append(f"Date BETWEEN '{start_date}' AND '{end_date}'")
+        where_conditions.append(f"i.Date BETWEEN '{start_date}' AND '{end_date}'")
     
-    # Region filter
-    if regions:
-        region_list = "', '".join(regions)
-        conditions.append(f"Region IN ('{region_list}')")
+    # Construct the FROM clause
+    from_clause = base_from
+    if join_conditions:
+        from_clause += " " + " ".join(join_conditions)
     
-    # Category filter
-    if categories:
-        category_list = "', '".join(categories)
-        conditions.append(f"Category IN ('{category_list}')")
+    # Construct the WHERE clause
+    where_clause = ""
+    if where_conditions:
+        where_clause = " WHERE " + " AND ".join(where_conditions)
     
-    if conditions:
-        return " WHERE " + " AND ".join(conditions)
-    return ""
+    return from_clause, where_clause
 
 def main():
     # Header
@@ -315,19 +338,19 @@ def show_overview(conn, df, date_range=None, regions=None, categories=None):
     st.header("📊 Inventory Overview")
     
     # Get filter conditions for SQL queries
-    filter_conditions = get_filter_conditions(date_range, regions, categories)
+    from_clause, where_clause = get_filter_conditions_with_joins(conn, date_range, regions, categories)
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        query = f"SELECT COUNT(DISTINCT Product_ID) as count FROM inventory_facts{filter_conditions}"
+        query = f"SELECT COUNT(DISTINCT i.Product_ID) as count FROM {from_clause}{where_clause}"
         total_skus = run_sql_query(conn, query)
         if not total_skus.empty:
             st.metric("Total SKUs", f"{total_skus.iloc[0]['count']:,}")
     
     with col2:
-        query = f"SELECT COUNT(DISTINCT Store_ID) as count FROM inventory_facts{filter_conditions}"
+        query = f"SELECT COUNT(DISTINCT i.Store_ID) as count FROM {from_clause}{where_clause}"
         total_stores = run_sql_query(conn, query)
         if not total_stores.empty:
             st.metric("Total Stores", f"{total_stores.iloc[0]['count']:,}")
@@ -367,10 +390,10 @@ def show_overview(conn, df, date_range=None, regions=None, categories=None):
     if 'Inventory_Level' in df.columns and 'Demand_Forecast' in df.columns:
         # Low stock alerts
         query = f"""
-            SELECT Product_ID, Store_ID, Inventory_Level, Demand_Forecast
-            FROM inventory_facts 
-            WHERE Inventory_Level < Demand_Forecast{filter_conditions.replace('WHERE', 'AND') if filter_conditions else ''}
-            ORDER BY (Demand_Forecast - Inventory_Level) DESC
+            SELECT i.Product_ID, i.Store_ID, i.Inventory_Level, i.Demand_Forecast
+            FROM {from_clause}
+            WHERE i.Inventory_Level < i.Demand_Forecast{' AND ' + where_clause.replace(' WHERE ', '') if where_clause else ''}
+            ORDER BY (i.Demand_Forecast - i.Inventory_Level) DESC
             LIMIT 10
         """
         low_stock = run_sql_query(conn, query)
@@ -384,7 +407,7 @@ def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None
     """Display sales analysis dashboard"""
     st.header("💰 Sales Performance Analysis")
     
-    filter_conditions = get_filter_conditions(date_range, regions, categories)
+    from_clause, where_clause = get_filter_conditions_with_joins(conn, date_range, regions, categories)
     
     # Top performing products
     col1, col2 = st.columns(2)
@@ -392,10 +415,10 @@ def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None
     with col1:
         st.subheader("🏆 Top 10 Products by Sales")
         query = f"""
-            SELECT Product_ID, SUM(Units_Sold) as Total_Sales
-            FROM inventory_facts
-            {filter_conditions}
-            GROUP BY Product_ID
+            SELECT i.Product_ID, SUM(i.Units_Sold) as Total_Sales
+            FROM {from_clause}
+            {where_clause}
+            GROUP BY i.Product_ID
             ORDER BY Total_Sales DESC
             LIMIT 10
         """
@@ -410,10 +433,10 @@ def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None
     with col2:
         st.subheader("💸 Revenue by Product")
         revenue_query = f"""
-            SELECT Product_ID, SUM(Units_Sold * Price) as Revenue
-            FROM inventory_facts
-            {filter_conditions}
-            GROUP BY Product_ID
+            SELECT i.Product_ID, SUM(i.Units_Sold * i.Price) as Revenue
+            FROM {from_clause}
+            {where_clause}
+            GROUP BY i.Product_ID
             ORDER BY Revenue DESC
             LIMIT 10
         """
@@ -437,16 +460,16 @@ def show_inventory_management(conn, df, date_range=None, regions=None, categorie
     """Display inventory management dashboard"""
     st.header("📦 Inventory Management")
     
-    filter_conditions = get_filter_conditions(date_range, regions, categories)
+    from_clause, where_clause = get_filter_conditions_with_joins(conn, date_range, regions, categories)
     
     # Inventory turnover analysis
     st.subheader("🔄 Inventory Turnover Analysis")
     turnover_query = f"""
-        SELECT Product_ID,
-               ROUND(SUM(Units_Sold) / NULLIF(AVG(Inventory_Level), 0), 2) as Turnover_Ratio
-        FROM inventory_facts
-        {filter_conditions}
-        GROUP BY Product_ID
+        SELECT i.Product_ID,
+               ROUND(SUM(i.Units_Sold) / NULLIF(AVG(i.Inventory_Level), 0), 2) as Turnover_Ratio
+        FROM {from_clause}
+        {where_clause}
+        GROUP BY i.Product_ID
         ORDER BY Turnover_Ratio DESC
         LIMIT 15
     """
@@ -461,12 +484,12 @@ def show_inventory_management(conn, df, date_range=None, regions=None, categorie
     # Reorder recommendations
     st.subheader("🔔 Reorder Recommendations")
     reorder_query = f"""
-        SELECT Store_ID, Product_ID, 
-               ROUND(AVG(Units_Sold) * 7, 2) as Reorder_Point,
-               MAX(Inventory_Level) as Current_Inventory
-        FROM inventory_facts
-        {filter_conditions}
-        GROUP BY Store_ID, Product_ID
+        SELECT i.Store_ID, i.Product_ID, 
+               ROUND(AVG(i.Units_Sold) * 7, 2) as Reorder_Point,
+               MAX(i.Inventory_Level) as Current_Inventory
+        FROM {from_clause}
+        {where_clause}
+        GROUP BY i.Store_ID, i.Product_ID
         HAVING Current_Inventory <= Reorder_Point
         ORDER BY (Reorder_Point - Current_Inventory) DESC
         LIMIT 20
@@ -483,7 +506,7 @@ def show_price_optimization(conn, df, date_range=None, regions=None, categories=
     """Display price optimization dashboard"""
     st.header("💲 Price Optimization Analysis")
     
-    filter_conditions = get_filter_conditions(date_range, regions, categories)
+    from_clause, where_clause = get_filter_conditions_with_joins(conn, date_range, regions, categories)
     
     # Price elasticity analysis
     st.subheader("📊 Price vs Sales Analysis")
@@ -491,11 +514,11 @@ def show_price_optimization(conn, df, date_range=None, regions=None, categories=
     if 'Price' in df.columns and 'Units_Sold' in df.columns:
         # Sweet spot analysis
         sweet_spot_query = f"""
-            SELECT Product_ID, Price, AVG(Units_Sold) as Avg_Sales
-            FROM inventory_facts
-            {filter_conditions}
-            GROUP BY Product_ID, Price
-            ORDER BY Product_ID, Avg_Sales DESC
+            SELECT i.Product_ID, i.Price, AVG(i.Units_Sold) as Avg_Sales
+            FROM {from_clause}
+            {where_clause}
+            GROUP BY i.Product_ID, i.Price
+            ORDER BY i.Product_ID, Avg_Sales DESC
         """
         sweet_spot_data = run_sql_query(conn, sweet_spot_query)
         

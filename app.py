@@ -336,7 +336,8 @@ def show_sales_analysis(conn, df):
         if not top_products.empty:
             fig = px.bar(top_products, x='Product_ID', y='Total_Sales',
                         title="Top 10 Products by Units Sold")
-            fig.update_xaxis(tickangle=45)
+            # Fixed: Use update_layout instead of update_xaxis
+            fig.update_layout(xaxis_tickangle=45)
             st.plotly_chart(fig, use_container_width=True)
     
     with col2:
@@ -353,7 +354,8 @@ def show_sales_analysis(conn, df):
         if not revenue_data.empty:
             fig = px.bar(revenue_data, x='Product_ID', y='Revenue',
                         title="Top 10 Products by Revenue")
-            fig.update_xaxis(tickangle=45)
+            # Fixed: Use update_layout instead of update_xaxis
+            fig.update_layout(xaxis_tickangle=45)
             st.plotly_chart(fig, use_container_width=True)
     
     # Sales trends over time
@@ -383,7 +385,8 @@ def show_inventory_management(conn, df):
     if not turnover_data.empty:
         fig = px.bar(turnover_data, x='Product_ID', y='Turnover_Ratio',
                     title="Product Turnover Ratios")
-        fig.update_xaxis(tickangle=45)
+        # Fixed: Use update_layout instead of update_xaxis
+        fig.update_layout(xaxis_tickangle=45)
         st.plotly_chart(fig, use_container_width=True)
     
     # Reorder recommendations

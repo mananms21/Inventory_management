@@ -349,6 +349,8 @@ def main():
         show_external_factors(conn, filtered_df, date_range, regions, categories)
     elif page == "🔍 Advanced Analytics":
         show_advanced_analytics(conn, filtered_df, date_range, regions, categories)
+    elif page == "🔧 Data Management":
+        show_data_management(conn, filtered_df)
 
 def show_overview(conn, df, date_range=None, regions=None, categories=None):
     """Display overview dashboard"""
@@ -509,6 +511,103 @@ def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None
             st.error(f"Error creating sales trend chart: {str(e)}")
     else:
         st.info("Date or Units_Sold data not available")
+
+# Add this function after show_advanced_analytics() and before main()
+
+def show_data_management(conn, df):
+    """Display data management dashboard"""
+    st.header("🔧 Data Management")
+    
+    if df is None or df.empty:
+        st.warning("No data available")
+        return
+    
+    tab1, tab2 = st.tabs(["➕ Add Data", "🗑️ Delete Data"])
+    
+    with tab1:
+        st.subheader("Add New Record")
+        
+        # Get available columns
+        columns = df.columns.tolist()
+        
+        # Create form for adding new data
+        with st.form("add_data_form"):
+            new_data = {}
+            
+            # Create input fields for each column
+            for col in columns:
+                if df[col].dtype in ['int64', 'float64']:
+                    new_data[col] = st.number_input(f"{col}", value=0.0)
+                else:
+                    # Get unique values for dropdown
+                    unique_vals = df[col].dropna().unique().tolist()
+                    if len(unique_vals) < 50:  # Use selectbox for limited options
+                        new_data[col] = st.selectbox(f"{col}", [""] + unique_vals)
+                    else:
+                        new_data[col] = st.text_input(f"{col}")
+            
+            submitted = st.form_submit_button("Add Record")
+            
+            if submitted:
+                try:
+                    # Convert to dataframe
+                    new_row = pd.DataFrame([new_data])
+                    
+                    # Add to database
+                    new_row.to_sql('inventory_facts', conn, if_exists='append', index=False)
+                    st.success("✅ Record added successfully!")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error adding record: {str(e)}")
+    
+    with tab2:
+        st.subheader("Delete Records")
+        
+        # Show current data with selection
+        st.write("Select records to delete:")
+        
+        # Create a subset for display (first 100 rows)
+        display_df = df.head(100).copy()
+        display_df.insert(0, 'Select', False)
+        
+        # Use data editor for selection
+        edited_df = st.data_editor(
+            display_df,
+            column_config={"Select": st.column_config.CheckboxColumn("Select")},
+            disabled=[col for col in display_df.columns if col != 'Select'],
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # Delete selected records
+        if st.button("🗑️ Delete Selected"):
+            selected_rows = edited_df[edited_df['Select'] == True]
+            
+            if len(selected_rows) > 0:
+                try:
+                    # Build delete conditions
+                    for idx, row in selected_rows.iterrows():
+                        conditions = []
+                        for col in df.columns:
+                            if pd.notna(row[col]):
+                                if df[col].dtype in ['int64', 'float64']:
+                                    conditions.append(f"{col} = {row[col]}")
+                                else:
+                                    conditions.append(f"{col} = '{row[col]}'")
+                        
+                        if conditions:
+                            delete_query = f"DELETE FROM inventory_facts WHERE {' AND '.join(conditions[:3])}"  # Use first 3 conditions to avoid too complex queries
+                            conn.execute(delete_query)
+                    
+                    conn.commit()
+                    st.success(f"✅ Deleted {len(selected_rows)} records!")
+                    st.experimental_rerun()
+                    
+                except Exception as e:
+                    st.error(f"Error deleting records: {str(e)}")
+            else:
+                st.warning("No records selected for deletion")
+
 
 def show_inventory_management(conn, df, date_range=None, regions=None, categories=None):
     """Display inventory management dashboard"""

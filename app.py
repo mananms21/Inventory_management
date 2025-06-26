@@ -556,7 +556,7 @@ def show_data_management(conn, df):
                     # Add to database
                     new_row.to_sql('inventory_facts', conn, if_exists='append', index=False)
                     st.success("✅ Record added successfully!")
-                    st.experimental_rerun()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error adding record: {str(e)}")
     
@@ -601,7 +601,7 @@ def show_data_management(conn, df):
                     
                     conn.commit()
                     st.success(f"✅ Deleted {len(selected_rows)} records!")
-                    st.experimental_rerun()
+                    st.rerun()
                     
                 except Exception as e:
                     st.error(f"Error deleting records: {str(e)}")

@@ -39,6 +39,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize session state for data management
+if 'data_modified' not in st.session_state:
+    st.session_state.data_modified = False
+if 'current_data' not in st.session_state:
+    st.session_state.current_data = None
+
 # Database connection function
 @st.cache_resource
 def get_database_connection():
@@ -60,6 +66,13 @@ def load_data():
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
         return None
+
+def get_current_data():
+    """Get current data (either original or modified)"""
+    if st.session_state.data_modified and st.session_state.current_data is not None:
+        return st.session_state.current_data
+    else:
+        return load_data()
 
 # Function to get available columns in a table
 def get_table_columns(conn, table_name):
@@ -225,7 +238,7 @@ def build_filtered_query(conn, base_select, date_range=None, regions=None, categ
     # Build WHERE clause
     where_clause = ""
     if where_conditions:
-        where_clause = " WHERE " + " AND ".join(where_conditions)
+        where_clause = " WHERE " + " ".join(where_conditions)
     
     # Fix column references in SELECT clause to use table aliases
     fixed_select = base_select
@@ -262,13 +275,182 @@ def build_filtered_query(conn, base_select, date_range=None, regions=None, categ
     final_query = f"{fixed_select} FROM {from_clause}{where_clause}"
     return final_query
 
+def show_data_management(conn, df):
+    """Display data management interface"""
+    st.header("🔧 Data Management")
+    
+    if df is None or df.empty:
+        st.warning("No data available")
+        return
+    
+    tab1, tab2, tab3 = st.tabs(["➕ Add Data", "🗑️ Delete Data", "📋 View Current Data"])
+    
+    with tab1:
+        st.subheader("Add New Data Point")
+        
+        # Create form for adding new data
+        with st.form("add_data_form"):
+            cols = st.columns(3)
+            new_data = {}
+            
+            # Get all columns from the dataframe
+            for i, column in enumerate(df.columns):
+                col_idx = i % 3
+                with cols[col_idx]:
+                    if df[column].dtype in ['object', 'string']:
+                        # For string columns, provide text input with existing values as options
+                        unique_values = df[column].dropna().unique().tolist()
+                        if len(unique_values) <= 20:  # If not too many unique values, show selectbox
+                            selected_value = st.selectbox(f"{column}", 
+                                                        options=[""] + unique_values, 
+                                                        key=f"add_{column}")
+                            if selected_value == "":
+                                new_data[column] = st.text_input(f"Or enter new {column}", key=f"add_text_{column}")
+                            else:
+                                new_data[column] = selected_value
+                        else:
+                            new_data[column] = st.text_input(f"{column}", key=f"add_{column}")
+                    elif df[column].dtype in ['int64', 'float64']:
+                        # For numeric columns
+                        min_val = float(df[column].min()) if not df[column].empty else 0.0
+                        max_val = float(df[column].max()) if not df[column].empty else 100.0
+                        new_data[column] = st.number_input(f"{column}", 
+                                                         min_value=min_val, 
+                                                         max_value=max_val*2,
+                                                         value=min_val,
+                                                         key=f"add_{column}")
+                    elif 'date' in column.lower():
+                        # For date columns
+                        new_data[column] = st.date_input(f"{column}", key=f"add_{column}")
+                    else:
+                        new_data[column] = st.text_input(f"{column}", key=f"add_{column}")
+            
+            submitted = st.form_submit_button("Add Data Point")
+            
+            if submitted:
+                # Create new row
+                new_row = pd.DataFrame([new_data])
+                
+                # Get current data
+                current_df = get_current_data()
+                if current_df is not None:
+                    # Append new row
+                    updated_df = pd.concat([current_df, new_row], ignore_index=True)
+                    
+                    # Update session state
+                    st.session_state.current_data = updated_df
+                    st.session_state.data_modified = True
+                    
+                    st.success("✅ Data point added successfully!")
+                    st.rerun()
+    
+    with tab2:
+        st.subheader("Delete Data Points")
+        
+        current_df = get_current_data()
+        if current_df is not None and not current_df.empty:
+            # Show current data with selection
+            st.write("Select rows to delete:")
+            
+            # Create a selection interface
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                # Display data with index
+                display_df = current_df.copy()
+                display_df.insert(0, 'Row_Index', range(len(display_df)))
+                st.dataframe(display_df, use_container_width=True)
+            
+            with col2:
+                st.write("Delete Options:")
+                
+                # Option 1: Delete by row index
+                max_index = len(current_df) - 1
+                row_to_delete = st.number_input("Row Index to Delete", 
+                                              min_value=0, 
+                                              max_value=max_index, 
+                                              value=0)
+                
+                if st.button("Delete Selected Row"):
+                    if 0 <= row_to_delete <= max_index:
+                        updated_df = current_df.drop(index=row_to_delete).reset_index(drop=True)
+                        st.session_state.current_data = updated_df
+                        st.session_state.data_modified = True
+                        st.success(f"✅ Row {row_to_delete} deleted successfully!")
+                        st.rerun()
+                    else:
+                        st.error("Invalid row index")
+                
+                st.markdown("---")
+                
+                # Option 2: Delete by condition
+                st.write("Delete by Condition:")
+                if len(current_df.columns) > 0:
+                    delete_column = st.selectbox("Select Column", current_df.columns)
+                    
+                    if current_df[delete_column].dtype in ['object', 'string']:
+                        unique_vals = current_df[delete_column].dropna().unique()
+                        delete_value = st.selectbox("Select Value to Delete", unique_vals)
+                    else:
+                        delete_value = st.text_input("Enter Value to Delete")
+                    
+                    if st.button("Delete Matching Rows"):
+                        try:
+                            if current_df[delete_column].dtype in ['int64', 'float64']:
+                                delete_value = float(delete_value)
+                            
+                            rows_to_delete = current_df[current_df[delete_column] == delete_value]
+                            
+                            if not rows_to_delete.empty:
+                                updated_df = current_df[current_df[delete_column] != delete_value].reset_index(drop=True)
+                                st.session_state.current_data = updated_df
+                                st.session_state.data_modified = True
+                                st.success(f"✅ Deleted {len(rows_to_delete)} rows where {delete_column} = {delete_value}")
+                                st.rerun()
+                            else:
+                                st.warning("No matching rows found")
+                        except Exception as e:
+                            st.error(f"Error deleting rows: {str(e)}")
+        else:
+            st.info("No data available to delete")
+    
+    with tab3:
+        st.subheader("Current Dataset")
+        
+        current_df = get_current_data()
+        if current_df is not None:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Total Rows", len(current_df))
+            with col2:
+                st.metric("Total Columns", len(current_df.columns))
+            with col3:
+                if st.session_state.data_modified:
+                    st.metric("Status", "Modified", delta="Changes Made")
+                else:
+                    st.metric("Status", "Original", delta="No Changes")
+            
+            # Display current data
+            st.dataframe(current_df, use_container_width=True)
+            
+            # Reset to original data button
+            if st.session_state.data_modified:
+                if st.button("🔄 Reset to Original Data"):
+                    st.session_state.data_modified = False
+                    st.session_state.current_data = None
+                    st.success("Data reset to original!")
+                    st.rerun()
+        else:
+            st.warning("No data available")
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏪 Inventory Analytics Dashboard</h1>', unsafe_allow_html=True)
     
     # Load data
     with st.spinner("Loading data..."):
-        df = load_data()
+        df = get_current_data()
         
     if df is None:
         st.stop()
@@ -286,7 +468,7 @@ def main():
     page = st.sidebar.selectbox(
         "Choose Analysis",
         ["📊 Overview", "💰 Sales Analysis", "📦 Inventory Management", 
-         "💲 Price Optimization", "🌤️ External Factors", "🔍 Advanced Analytics"]
+         "💲 Price Optimization", "🌤️ External Factors", "🔍 Advanced Analytics", "🔧 Data Management"]
     )
     
     # Common filters
@@ -349,6 +531,8 @@ def main():
         show_external_factors(conn, filtered_df, date_range, regions, categories)
     elif page == "🔍 Advanced Analytics":
         show_advanced_analytics(conn, filtered_df, date_range, regions, categories)
+    elif page == "🔧 Data Management":
+        show_data_management(conn, df)
 
 def show_overview(conn, df, date_range=None, regions=None, categories=None):
     """Display overview dashboard"""

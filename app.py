@@ -50,9 +50,16 @@ def get_database_connection():
 @st.cache_data
 def load_data():
     """Load and prepare data from CSV files"""
-    filename = 'inventory_data.csv'
-    df = pd.read_csv(filename)
-    return df
+    try:
+        filename = 'inventory_data.csv'
+        df = pd.read_csv(filename)
+        return df
+    except FileNotFoundError:
+        st.error("inventory_data.csv file not found. Please upload the file.")
+        return None
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None
 
 # Function to get available columns in a table
 def get_table_columns(conn, table_name):
@@ -135,16 +142,22 @@ def run_sql_query(conn, query):
 
 def apply_filters(df, date_range=None, regions=None, categories=None):
     """Apply filters to the dataframe"""
+    if df is None or df.empty:
+        return df
+        
     filtered_df = df.copy()
     
     # Apply date filter
     if date_range and 'Date' in df.columns:
         if len(date_range) == 2:
             start_date, end_date = date_range
-            filtered_df = filtered_df[
-                (pd.to_datetime(filtered_df['Date']).dt.date >= start_date) & 
-                (pd.to_datetime(filtered_df['Date']).dt.date <= end_date)
-            ]
+            try:
+                filtered_df = filtered_df[
+                    (pd.to_datetime(filtered_df['Date']).dt.date >= start_date) & 
+                    (pd.to_datetime(filtered_df['Date']).dt.date <= end_date)
+                ]
+            except:
+                pass  # Skip date filtering if conversion fails
     
     # Apply region filter
     if regions and 'Region' in df.columns:
@@ -160,68 +173,93 @@ def build_filtered_query(conn, base_select, date_range=None, regions=None, categ
     """Build a SQL query with proper filtering based on available tables and columns"""
     
     # Check what tables exist
-    tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
-    existing_tables = run_sql_query(conn, tables_query)['name'].tolist()
+    try:
+        tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
+        existing_tables = run_sql_query(conn, tables_query)['name'].tolist()
+    except:
+        existing_tables = ['inventory_facts']
     
     # Check what columns exist in inventory_facts
     inventory_columns = get_table_columns(conn, 'inventory_facts')
     
-    # Start building the query
-    from_clause = "inventory_facts"
+    # Start building the query with proper table aliases
+    joins = []
     where_conditions = []
+    
+    # Always use 'i' alias for inventory_facts
+    from_clause = "inventory_facts i"
     
     # Handle region filter
     if regions:
         if 'stores' in existing_tables and 'Region' in get_table_columns(conn, 'stores'):
             # Join with stores table
-            from_clause = "inventory_facts i LEFT JOIN stores s ON i.Store_ID = s.Store_ID"
+            joins.append("LEFT JOIN stores s ON i.Store_ID = s.Store_ID")
             region_list = "', '".join(regions)
             where_conditions.append(f"s.Region IN ('{region_list}')")
         elif 'Region' in inventory_columns:
             # Use Region directly from inventory_facts
             region_list = "', '".join(regions)
-            where_conditions.append(f"Region IN ('{region_list}')")
+            where_conditions.append(f"i.Region IN ('{region_list}')")
     
     # Handle category filter
     if categories:
         if 'products' in existing_tables and 'Category' in get_table_columns(conn, 'products'):
             # Join with products table
-            if 'stores' in existing_tables and regions:
-                # Already have stores join
-                from_clause += " LEFT JOIN products p ON i.Product_ID = p.Product_ID"
-            else:
-                from_clause = "inventory_facts i LEFT JOIN products p ON i.Product_ID = p.Product_ID"
+            joins.append("LEFT JOIN products p ON i.Product_ID = p.Product_ID")
             category_list = "', '".join(categories)
             where_conditions.append(f"p.Category IN ('{category_list}')")
         elif 'Category' in inventory_columns:
             # Use Category directly from inventory_facts
             category_list = "', '".join(categories)
-            where_conditions.append(f"Category IN ('{category_list}')")
+            where_conditions.append(f"i.Category IN ('{category_list}')")
     
     # Handle date filter
     if date_range and len(date_range) == 2:
         start_date, end_date = date_range
-        if 'i.' in from_clause:  # We have joins
-            where_conditions.append(f"i.Date BETWEEN '{start_date}' AND '{end_date}'")
-        else:
-            where_conditions.append(f"Date BETWEEN '{start_date}' AND '{end_date}'")
+        where_conditions.append(f"i.Date BETWEEN '{start_date}' AND '{end_date}'")
     
-    # Build final query
+    # Build FROM clause with joins
+    if joins:
+        from_clause += " " + " ".join(joins)
+    
+    # Build WHERE clause
     where_clause = ""
     if where_conditions:
         where_clause = " WHERE " + " AND ".join(where_conditions)
     
-    # Adjust the base_select based on table structure
-    if 'i.' in from_clause and 'i.' not in base_select:
-        # Need to add table aliases to the select statement
-        base_select = base_select.replace('Product_ID', 'i.Product_ID')
-        base_select = base_select.replace('Store_ID', 'i.Store_ID')
-        base_select = base_select.replace('Units_Sold', 'i.Units_Sold')
-        base_select = base_select.replace('Price', 'i.Price')
-        base_select = base_select.replace('Inventory_Level', 'i.Inventory_Level')
-        base_select = base_select.replace('Demand_Forecast', 'i.Demand_Forecast')
+    # Fix column references in SELECT clause to use table aliases
+    fixed_select = base_select
     
-    final_query = f"{base_select} FROM {from_clause}{where_clause}"
+    # Replace common column references with proper aliases
+    column_mappings = {
+        'Product_ID': 'i.Product_ID',
+        'Store_ID': 'i.Store_ID', 
+        'Units_Sold': 'i.Units_Sold',
+        'Price': 'i.Price',
+        'Inventory_Level': 'i.Inventory_Level',
+        'Demand_Forecast': 'i.Demand_Forecast',
+        'Date': 'i.Date'
+    }
+    
+    # Only replace if not already aliased
+    for col, aliased_col in column_mappings.items():
+        if col in fixed_select and f'i.{col}' not in fixed_select and f's.{col}' not in fixed_select and f'p.{col}' not in fixed_select:
+            # Use word boundaries to avoid partial replacements
+            import re
+            pattern = r'\b' + re.escape(col) + r'\b'
+            fixed_select = re.sub(pattern, aliased_col, fixed_select)
+    
+    # Fix GROUP BY and ORDER BY clauses
+    if 'GROUP BY Product_ID' in fixed_select:
+        fixed_select = fixed_select.replace('GROUP BY Product_ID', 'GROUP BY i.Product_ID')
+    if 'ORDER BY' in fixed_select and 'i.' not in fixed_select.split('ORDER BY')[1]:
+        order_part = fixed_select.split('ORDER BY')[1]
+        for col in column_mappings:
+            if col in order_part and f'i.{col}' not in order_part:
+                order_part = order_part.replace(col, f'i.{col}')
+        fixed_select = fixed_select.split('ORDER BY')[0] + 'ORDER BY' + order_part
+    
+    final_query = f"{fixed_select} FROM {from_clause}{where_clause}"
     return final_query
 
 def main():
@@ -257,30 +295,35 @@ def main():
     # Date range filter
     date_range = None
     if 'Date' in df.columns:
-        df['Date'] = pd.to_datetime(df['Date'])
-        date_range = st.sidebar.date_input(
-            "Select Date Range",
-            value=(df['Date'].min().date(), df['Date'].max().date()),
-            min_value=df['Date'].min().date(),
-            max_value=df['Date'].max().date()
-        )
+        try:
+            df['Date'] = pd.to_datetime(df['Date'])
+            date_range = st.sidebar.date_input(
+                "Select Date Range",
+                value=(df['Date'].min().date(), df['Date'].max().date()),
+                min_value=df['Date'].min().date(),
+                max_value=df['Date'].max().date()
+            )
+        except:
+            st.sidebar.warning("Date column format not recognized")
     
     # Region filter - only show if Region column exists
     regions = None
     if 'Region' in df.columns:
+        unique_regions = df['Region'].dropna().unique()
         regions = st.sidebar.multiselect(
             "Select Regions",
-            options=df['Region'].unique(),
-            default=df['Region'].unique()
+            options=unique_regions,
+            default=unique_regions
         )
     
     # Category filter - only show if Category column exists
     categories = None
     if 'Category' in df.columns:
+        unique_categories = df['Category'].dropna().unique()
         categories = st.sidebar.multiselect(
             "Select Categories",
-            options=df['Category'].unique(),
-            default=df['Category'].unique()
+            options=unique_categories,
+            default=unique_categories
         )
     
     # Apply filters to dataframe
@@ -290,7 +333,8 @@ def main():
     if len(filtered_df) != len(df):
         st.sidebar.markdown("---")
         st.sidebar.markdown(f"**Filtered Records:** {len(filtered_df):,} / {len(df):,}")
-        st.sidebar.markdown(f"**Filter Applied:** {((len(df) - len(filtered_df)) / len(df) * 100):.1f}% reduction")
+        if len(df) > 0:
+            st.sidebar.markdown(f"**Filter Applied:** {((len(df) - len(filtered_df)) / len(df) * 100):.1f}% reduction")
     
     # Main content based on selected page
     if page == "📊 Overview":
@@ -310,30 +354,44 @@ def show_overview(conn, df, date_range=None, regions=None, categories=None):
     """Display overview dashboard"""
     st.header("📊 Inventory Overview")
     
+    if df is None or df.empty:
+        st.warning("No data available for analysis")
+        return
+    
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        query = build_filtered_query(conn, "SELECT COUNT(DISTINCT Product_ID) as count", date_range, regions, categories)
+        query = build_filtered_query(conn, "SELECT COUNT(DISTINCT i.Product_ID) as count", date_range, regions, categories)
         total_skus = run_sql_query(conn, query)
         if not total_skus.empty:
             st.metric("Total SKUs", f"{total_skus.iloc[0]['count']:,}")
+        else:
+            # Fallback to pandas
+            st.metric("Total SKUs", f"{df['Product_ID'].nunique():,}" if 'Product_ID' in df.columns else "N/A")
     
     with col2:
-        query = build_filtered_query(conn, "SELECT COUNT(DISTINCT Store_ID) as count", date_range, regions, categories)
+        query = build_filtered_query(conn, "SELECT COUNT(DISTINCT i.Store_ID) as count", date_range, regions, categories)
         total_stores = run_sql_query(conn, query)
         if not total_stores.empty:
             st.metric("Total Stores", f"{total_stores.iloc[0]['count']:,}")
+        else:
+            # Fallback to pandas
+            st.metric("Total Stores", f"{df['Store_ID'].nunique():,}" if 'Store_ID' in df.columns else "N/A")
     
     with col3:
         if 'Units_Sold' in df.columns:
             total_sales = df['Units_Sold'].sum()
             st.metric("Total Units Sold", f"{total_sales:,}")
+        else:
+            st.metric("Total Units Sold", "N/A")
     
     with col4:
         if 'Price' in df.columns and 'Units_Sold' in df.columns:
             total_revenue = (df['Price'] * df['Units_Sold']).sum()
             st.metric("Total Revenue", f"${total_revenue:,.2f}")
+        else:
+            st.metric("Total Revenue", "N/A")
     
     # Charts
     col1, col2 = st.columns(2)
@@ -342,17 +400,23 @@ def show_overview(conn, df, date_range=None, regions=None, categories=None):
         st.subheader("Sales by Category")
         if 'Category' in df.columns and 'Units_Sold' in df.columns:
             category_sales = df.groupby('Category')['Units_Sold'].sum().reset_index()
-            fig = px.pie(category_sales, values='Units_Sold', names='Category', 
-                        title="Sales Distribution by Category")
-            st.plotly_chart(fig, use_container_width=True)
+            if not category_sales.empty:
+                fig = px.pie(category_sales, values='Units_Sold', names='Category', 
+                            title="Sales Distribution by Category")
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Category or Units_Sold data not available")
     
     with col2:
         st.subheader("Sales by Region")
         if 'Region' in df.columns and 'Units_Sold' in df.columns:
             region_sales = df.groupby('Region')['Units_Sold'].sum().reset_index()
-            fig = px.bar(region_sales, x='Region', y='Units_Sold',
-                        title="Sales by Region")
-            st.plotly_chart(fig, use_container_width=True)
+            if not region_sales.empty:
+                fig = px.bar(region_sales, x='Region', y='Units_Sold',
+                            title="Sales by Region")
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Region or Units_Sold data not available")
     
     # Inventory alerts
     st.subheader("🚨 Inventory Alerts")
@@ -364,115 +428,202 @@ def show_overview(conn, df, date_range=None, regions=None, categories=None):
         if not low_stock_df.empty:
             st.warning(f"⚠️ {len(low_stock_df)} products are understocked")
             with st.expander("View Understocked Items"):
-                st.dataframe(low_stock_df[['Product_ID', 'Store_ID', 'Inventory_Level', 'Demand_Forecast']].head(10))
+                display_columns = ['Product_ID', 'Store_ID', 'Inventory_Level', 'Demand_Forecast']
+                available_columns = [col for col in display_columns if col in low_stock_df.columns]
+                st.dataframe(low_stock_df[available_columns].head(10))
+        else:
+            st.success("✅ No understocked items detected")
+    else:
+        st.info("Inventory level or demand forecast data not available for alerts")
 
 def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None):
     """Display sales analysis dashboard"""
     st.header("💰 Sales Performance Analysis")
+    
+    if df is None or df.empty:
+        st.warning("No data available for analysis")
+        return
     
     # Top performing products
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("🏆 Top 10 Products by Sales")
-        query = build_filtered_query(conn, "SELECT Product_ID, SUM(Units_Sold) as Total_Sales", date_range, regions, categories)
-        query += " GROUP BY Product_ID ORDER BY Total_Sales DESC LIMIT 10"
-        top_products = run_sql_query(conn, query)
-        
-        if not top_products.empty:
-            fig = px.bar(top_products, x='Product_ID', y='Total_Sales',
-                        title="Top 10 Products by Units Sold")
-            fig.update_layout(xaxis_tickangle=45)
-            st.plotly_chart(fig, use_container_width=True)
+        if 'Units_Sold' in df.columns and 'Product_ID' in df.columns:
+            query = build_filtered_query(conn, "SELECT i.Product_ID, SUM(i.Units_Sold) as Total_Sales", date_range, regions, categories)
+            query += " GROUP BY i.Product_ID ORDER BY Total_Sales DESC LIMIT 10"
+            top_products = run_sql_query(conn, query)
+            
+            if not top_products.empty:
+                fig = px.bar(top_products, x='Product_ID', y='Total_Sales',
+                            title="Top 10 Products by Units Sold")
+                fig.update_layout(xaxis_tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                # Fallback to pandas
+                top_products_pd = df.groupby('Product_ID')['Units_Sold'].sum().reset_index()
+                top_products_pd = top_products_pd.sort_values('Units_Sold', ascending=False).head(10)
+                if not top_products_pd.empty:
+                    fig = px.bar(top_products_pd, x='Product_ID', y='Units_Sold',
+                                title="Top 10 Products by Units Sold")
+                    fig.update_layout(xaxis_tickangle=45)
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Product_ID or Units_Sold data not available")
     
     with col2:
         st.subheader("💸 Revenue by Product")
-        if 'Price' in df.columns:
-            revenue_query = build_filtered_query(conn, "SELECT Product_ID, SUM(Units_Sold * Price) as Revenue", date_range, regions, categories)
-            revenue_query += " GROUP BY Product_ID ORDER BY Revenue DESC LIMIT 10"
-            revenue_data = run_sql_query(conn, revenue_query)
+        if 'Price' in df.columns and 'Units_Sold' in df.columns and 'Product_ID' in df.columns:
+            query = build_filtered_query(conn, "SELECT i.Product_ID, SUM(i.Units_Sold * i.Price) as Revenue", date_range, regions, categories)
+            query += " GROUP BY i.Product_ID ORDER BY Revenue DESC LIMIT 10"
+            revenue_data = run_sql_query(conn, query)
             
             if not revenue_data.empty:
                 fig = px.bar(revenue_data, x='Product_ID', y='Revenue',
                             title="Top 10 Products by Revenue")
                 fig.update_layout(xaxis_tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                # Fallback to pandas
+                df['Revenue'] = df['Price'] * df['Units_Sold']
+                revenue_pd = df.groupby('Product_ID')['Revenue'].sum().reset_index()
+                revenue_pd = revenue_pd.sort_values('Revenue', ascending=False).head(10)
+                if not revenue_pd.empty:
+                    fig = px.bar(revenue_pd, x='Product_ID', y='Revenue',
+                                title="Top 10 Products by Revenue")
+                    fig.update_layout(xaxis_tickangle=45)
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Price, Units_Sold, or Product_ID data not available")
     
     # Sales trends over time
     st.subheader("📈 Sales Trends Over Time")
     if 'Date' in df.columns and 'Units_Sold' in df.columns:
-        daily_sales = df.groupby('Date')['Units_Sold'].sum().reset_index()
-        fig = px.line(daily_sales, x='Date', y='Units_Sold',
-                     title="Daily Sales Trend")
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            daily_sales = df.groupby('Date')['Units_Sold'].sum().reset_index()
+            if not daily_sales.empty:
+                fig = px.line(daily_sales, x='Date', y='Units_Sold',
+                             title="Daily Sales Trend")
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating sales trend chart: {str(e)}")
+    else:
+        st.info("Date or Units_Sold data not available")
 
 def show_inventory_management(conn, df, date_range=None, regions=None, categories=None):
     """Display inventory management dashboard"""
     st.header("📦 Inventory Management")
     
+    if df is None or df.empty:
+        st.warning("No data available for analysis")
+        return
+    
     # Use pandas for inventory analysis to avoid SQL complexity
-    if 'Inventory_Level' in df.columns and 'Units_Sold' in df.columns:
+    if 'Inventory_Level' in df.columns and 'Units_Sold' in df.columns and 'Product_ID' in df.columns:
         st.subheader("🔄 Inventory Turnover Analysis")
         
-        turnover_df = df.groupby('Product_ID').agg({
-            'Units_Sold': 'sum',
-            'Inventory_Level': 'mean'
-        }).reset_index()
-        
-        turnover_df['Turnover_Ratio'] = turnover_df['Units_Sold'] / turnover_df['Inventory_Level'].replace(0, np.nan)
-        turnover_df = turnover_df.dropna().sort_values('Turnover_Ratio', ascending=False).head(15)
-        
-        if not turnover_df.empty:
-            fig = px.bar(turnover_df, x='Product_ID', y='Turnover_Ratio',
-                        title="Product Turnover Ratios")
-            fig.update_layout(xaxis_tickangle=45)
-            st.plotly_chart(fig, use_container_width=True)
+        try:
+            turnover_df = df.groupby('Product_ID').agg({
+                'Units_Sold': 'sum',
+                'Inventory_Level': 'mean'
+            }).reset_index()
+            
+            # Avoid division by zero
+            turnover_df['Turnover_Ratio'] = turnover_df['Units_Sold'] / turnover_df['Inventory_Level'].replace(0, np.nan)
+            turnover_df = turnover_df.dropna().sort_values('Turnover_Ratio', ascending=False).head(15)
+            
+            if not turnover_df.empty:
+                fig = px.bar(turnover_df, x='Product_ID', y='Turnover_Ratio',
+                            title="Product Turnover Ratios")
+                fig.update_layout(xaxis_tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No valid turnover data available")
+        except Exception as e:
+            st.error(f"Error calculating turnover ratios: {str(e)}")
+    else:
+        st.info("Required columns (Inventory_Level, Units_Sold, Product_ID) not available")
 
 def show_price_optimization(conn, df, date_range=None, regions=None, categories=None):
     """Display price optimization dashboard"""
     st.header("💲 Price Optimization Analysis")
     
+    if df is None or df.empty:
+        st.warning("No data available for analysis")
+        return
+    
     # Price elasticity analysis
     st.subheader("📊 Price vs Sales Analysis")
     
-    if 'Price' in df.columns and 'Units_Sold' in df.columns:
-        # Sweet spot analysis using pandas
-        sweet_spot_data = df.groupby(['Product_ID', 'Price'])['Units_Sold'].mean().reset_index()
-        sweet_spot_data.columns = ['Product_ID', 'Price', 'Avg_Sales']
-        
-        if not sweet_spot_data.empty:
-            # Select a product for detailed analysis
-            products = sweet_spot_data['Product_ID'].unique()
-            selected_product = st.selectbox("Select Product for Price Analysis", products)
+    if 'Price' in df.columns and 'Units_Sold' in df.columns and 'Product_ID' in df.columns:
+        try:
+            # Sweet spot analysis using pandas
+            sweet_spot_data = df.groupby(['Product_ID', 'Price'])['Units_Sold'].mean().reset_index()
+            sweet_spot_data.columns = ['Product_ID', 'Price', 'Avg_Sales']
             
-            product_data = sweet_spot_data[sweet_spot_data['Product_ID'] == selected_product]
-            
-            fig = px.scatter(product_data, x='Price', y='Avg_Sales',
-                           title=f"Price vs Sales for {selected_product}")
-            st.plotly_chart(fig, use_container_width=True)
+            if not sweet_spot_data.empty:
+                # Select a product for detailed analysis
+                products = sweet_spot_data['Product_ID'].unique()
+                if len(products) > 0:
+                    selected_product = st.selectbox("Select Product for Price Analysis", products)
+                    
+                    product_data = sweet_spot_data[sweet_spot_data['Product_ID'] == selected_product]
+                    
+                    if not product_data.empty:
+                        fig = px.scatter(product_data, x='Price', y='Avg_Sales',
+                                       title=f"Price vs Sales for {selected_product}")
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info(f"No data available for product {selected_product}")
+                else:
+                    st.info("No products available for analysis")
+            else:
+                st.info("No price-sales data available")
+        except Exception as e:
+            st.error(f"Error in price optimization analysis: {str(e)}")
+    else:
+        st.info("Required columns (Price, Units_Sold, Product_ID) not available")
 
 def show_external_factors(conn, df, date_range=None, regions=None, categories=None):
     """Display external factors analysis"""
     st.header("🌤️ External Factors Impact")
     
+    if df is None or df.empty:
+        st.warning("No data available for analysis")
+        return
+    
     # Weather impact (if weather data exists)
     if 'Weather_Condition' in df.columns and 'Units_Sold' in df.columns:
         st.subheader("🌦️ Weather Impact on Sales")
-        weather_sales = df.groupby('Weather_Condition')['Units_Sold'].mean().reset_index()
-        
-        fig = px.bar(weather_sales, x='Weather_Condition', y='Units_Sold',
-                    title="Average Sales by Weather Condition")
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            weather_sales = df.groupby('Weather_Condition')['Units_Sold'].mean().reset_index()
+            
+            if not weather_sales.empty:
+                fig = px.bar(weather_sales, x='Weather_Condition', y='Units_Sold',
+                            title="Average Sales by Weather Condition")
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error analyzing weather impact: {str(e)}")
+    else:
+        st.info("Weather_Condition or Units_Sold data not available")
     
     # Seasonal analysis
     if 'Date' in df.columns and 'Units_Sold' in df.columns:
         st.subheader("📅 Seasonal Analysis")
-        df['Month'] = pd.to_datetime(df['Date']).dt.month
-        monthly_sales = df.groupby('Month')['Units_Sold'].sum().reset_index()
+        try:
+            df_temp = df.copy()
+            df_temp['Month'] = pd.to_datetime(df_temp['Date']).dt.month
+            monthly_sales = df_temp.groupby('Month')['Units_Sold'].sum().reset_index()
+            
+            if not monthly_sales.empty:
+                fig = px.line(monthly_sales, x='Month', y='Units_Sold',
+                             title="Monthly Sales Pattern")
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error in seasonal analysis: {str(e)}")
+    else:
+        st.info("Date or Units_Sold data not available")
         
-        fig = px.line(monthly_sales, x='Month', y='Units_Sold',
-                     title="Monthly Sales Pattern")
-        st.plotly_chart(fig, use_container_width=True)
 
 def show_advanced_analytics(conn, df, date_range=None, regions=None, categories=None):
     """Display advanced analytics"""

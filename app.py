@@ -284,9 +284,9 @@ def main():
     
     # Navigation
     page = st.sidebar.selectbox(
-        "Choose Analysis",
-        ["📊 Overview", "💰 Sales Analysis", "📦 Inventory Management", 
-         "💲 Price Optimization", "🌤️ External Factors", "🔍 Advanced Analytics"]
+    "Choose Analysis",
+    ["📊 Overview", "💰 Sales Analysis", "📦 Inventory Management", 
+     "💲 Price Optimization", "🌤️ External Factors", "🔍 Advanced Analytics", "🔧 Data Management"]
     )
     
     # Common filters

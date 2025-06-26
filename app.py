@@ -613,15 +613,6 @@ def get_current_data():
         st.session_state.df_data = load_data()
         return st.session_state.df_data
 
-# Update main() function - replace the data loading section with:
-    # Load data
-    with st.spinner("Loading data..."):
-        df = get_current_data()
-
-# And change the data management call to:
-    elif page == "🔧 Data Management":
-        show_data_management()
-
 def show_inventory_management(conn, df, date_range=None, regions=None, categories=None):
     """Display inventory management dashboard"""
     st.header("📦 Inventory Management")

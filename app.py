@@ -50,9 +50,16 @@ def get_database_connection():
 @st.cache_data
 def load_data():
     """Load and prepare data from CSV files"""
-    filename = 'inventory_data.csv'
-    df = pd.read_csv(filename)
-    return df
+    try:
+        filename = 'inventory_data.csv'
+        df = pd.read_csv(filename)
+        return df
+    except FileNotFoundError:
+        st.error("❌ Could not find inventory_data.csv. Please ensure the file is in the correct directory.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error loading data: {str(e)}")
+        return None
 
 # Function to get available columns in a table
 def get_table_columns(conn, table_name):
@@ -240,6 +247,9 @@ def main():
     if not setup_database(conn, df):
         st.error("Failed to setup database")
         st.stop()
+    
+    # Show success message
+    st.success(f"✅ Successfully loaded {len(df):,} records from inventory data")
     
     # Sidebar for navigation and filters
     st.sidebar.title("📋 Navigation & Filters")

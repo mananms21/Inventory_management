@@ -64,7 +64,6 @@ def load_data():
         for filename in possible_files:
             try:
                 df = pd.read_csv(filename)
-                st.success(f"✅ Successfully loaded data from {filename}")
                 break
             except FileNotFoundError:
                 continue
@@ -100,15 +99,8 @@ def setup_database(conn, df):
         return False
     
     try:
-        # Show original dataframe columns for debugging
-        st.write("**Original DataFrame Columns:**", list(df.columns))
-        
         # Create main inventory table from parent dataset
         df.to_sql('inventory_facts', conn, if_exists='replace', index=False)
-        
-        # Show what columns actually exist in inventory_facts table
-        inventory_columns = get_table_columns(conn, 'inventory_facts')
-        st.write("**Columns in inventory_facts table:**", inventory_columns)
         
         # Auto-create normalized tables from the parent dataset
         # This mimics your ERD structure
@@ -127,10 +119,6 @@ def setup_database(conn, df):
                 
             stores_df = df[store_columns].drop_duplicates()
             stores_df.to_sql('stores', conn, if_exists='replace', index=False)
-            
-            # Show stores table columns
-            stores_columns = get_table_columns(conn, 'stores')
-            st.write("**Columns in stores table:**", stores_columns)
         
         # Create products table  
         if 'Product_ID' in df.columns:
@@ -146,10 +134,6 @@ def setup_database(conn, df):
                 
             products_df = df[product_columns].drop_duplicates()
             products_df.to_sql('products', conn, if_exists='replace', index=False)
-            
-            # Show products table columns
-            products_columns = get_table_columns(conn, 'products')
-            st.write("**Columns in products table:**", products_columns)
         
         # Create environment facts table
         env_columns = ['Date', 'Store_ID']
@@ -163,26 +147,9 @@ def setup_database(conn, df):
             env_df = df[env_columns].drop_duplicates()
             env_df.to_sql('environment_facts', conn, if_exists='replace', index=False)
         
-        st.info(f"✅ Database setup complete. Created tables from {len(df)} records.")
-        
-        # Show table summary
-        tables_created = []
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        for table in cursor.fetchall():
-            table_name = table[0]
-            count_query = f"SELECT COUNT(*) FROM {table_name}"
-            count = conn.execute(count_query).fetchone()[0]
-            tables_created.append(f"• {table_name}: {count:,} records")
-        
-        with st.expander("📋 Database Tables Created"):
-            for table_info in tables_created:
-                st.write(table_info)
-        
         return True
     except Exception as e:
         st.error(f"Database setup error: {str(e)}")
-        st.write("Available columns in your dataset:")
-        st.write(list(df.columns))
         return False
 
 # Analysis functions
@@ -192,7 +159,6 @@ def run_sql_query(conn, query):
         return pd.read_sql_query(query, conn)
     except Exception as e:
         st.error(f"Query execution error: {str(e)}")
-        st.error(f"Failed query: {query}")
         return pd.DataFrame()
 
 def apply_filters(df, date_range=None, regions=None, categories=None):
@@ -303,16 +269,6 @@ def main():
         st.error("Failed to setup database")
         st.stop()
     
-    # Debug section - show current database structure
-    with st.expander("🔍 Debug: Database Structure"):
-        tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
-        existing_tables = run_sql_query(conn, tables_query)
-        st.write("**Existing Tables:**", existing_tables['name'].tolist() if not existing_tables.empty else [])
-        
-        for table in existing_tables['name'].tolist() if not existing_tables.empty else []:
-            cols = get_table_columns(conn, table)
-            st.write(f"**{table} columns:**", cols)
-    
     # Sidebar for navigation and filters
     st.sidebar.title("📋 Navigation & Filters")
     
@@ -345,8 +301,6 @@ def main():
             options=df['Region'].unique(),
             default=df['Region'].unique()
         )
-    else:
-        st.sidebar.info("No Region column found in data")
     
     # Category filter - only show if Category column exists
     categories = None
@@ -356,8 +310,6 @@ def main():
             options=df['Category'].unique(),
             default=df['Category'].unique()
         )
-    else:
-        st.sidebar.info("No Category column found in data")
     
     # Apply filters to dataframe
     filtered_df = apply_filters(df, date_range, regions, categories)

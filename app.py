@@ -268,7 +268,7 @@ def main():
     
     # Load data
     with st.spinner("Loading data..."):
-        df = load_data()
+        df = get_current_data()
         
     if df is None:
         st.stop()
@@ -350,7 +350,7 @@ def main():
     elif page == "🔍 Advanced Analytics":
         show_advanced_analytics(conn, filtered_df, date_range, regions, categories)
     elif page == "🔧 Data Management":
-        show_data_management(conn, filtered_df)
+        show_data_management()
 
 def show_overview(conn, df, date_range=None, regions=None, categories=None):
     """Display overview dashboard"""
@@ -514,9 +514,17 @@ def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None
 
 # Add this function after show_advanced_analytics() and before main()
 
-def show_data_management(conn, df):
+# Add this function after show_advanced_analytics() and before main()
+
+def show_data_management():
     """Display data management dashboard"""
     st.header("🔧 Data Management")
+    
+    # Initialize session state for data if not exists
+    if 'df_data' not in st.session_state:
+        st.session_state.df_data = load_data()
+    
+    df = st.session_state.df_data
     
     if df is None or df.empty:
         st.warning("No data available")
@@ -550,11 +558,9 @@ def show_data_management(conn, df):
             
             if submitted:
                 try:
-                    # Convert to dataframe
+                    # Add to session state dataframe
                     new_row = pd.DataFrame([new_data])
-                    
-                    # Add to database
-                    new_row.to_sql('inventory_facts', conn, if_exists='append', index=False)
+                    st.session_state.df_data = pd.concat([st.session_state.df_data, new_row], ignore_index=True)
                     st.success("✅ Record added successfully!")
                     st.rerun()
                 except Exception as e:
@@ -585,21 +591,12 @@ def show_data_management(conn, df):
             
             if len(selected_rows) > 0:
                 try:
-                    # Build delete conditions
-                    for idx, row in selected_rows.iterrows():
-                        conditions = []
-                        for col in df.columns:
-                            if pd.notna(row[col]):
-                                if df[col].dtype in ['int64', 'float64']:
-                                    conditions.append(f"{col} = {row[col]}")
-                                else:
-                                    conditions.append(f"{col} = '{row[col]}'")
-                        
-                        if conditions:
-                            delete_query = f"DELETE FROM inventory_facts WHERE {' AND '.join(conditions[:3])}"  # Use first 3 conditions to avoid too complex queries
-                            conn.execute(delete_query)
+                    # Get indices to drop
+                    indices_to_drop = selected_rows.index.tolist()
                     
-                    conn.commit()
+                    # Drop from session state dataframe
+                    st.session_state.df_data = st.session_state.df_data.drop(indices_to_drop).reset_index(drop=True)
+                    
                     st.success(f"✅ Deleted {len(selected_rows)} records!")
                     st.rerun()
                     
@@ -608,6 +605,22 @@ def show_data_management(conn, df):
             else:
                 st.warning("No records selected for deletion")
 
+def get_current_data():
+    """Get current data from session state or load fresh"""
+    if 'df_data' in st.session_state:
+        return st.session_state.df_data
+    else:
+        st.session_state.df_data = load_data()
+        return st.session_state.df_data
+
+# Update main() function - replace the data loading section with:
+    # Load data
+    with st.spinner("Loading data..."):
+        df = get_current_data()
+
+# And change the data management call to:
+    elif page == "🔧 Data Management":
+        show_data_management()
 
 def show_inventory_management(conn, df, date_range=None, regions=None, categories=None):
     """Display inventory management dashboard"""

@@ -50,37 +50,9 @@ def get_database_connection():
 @st.cache_data
 def load_data():
     """Load and prepare data from CSV files"""
-    try:
-        # Try common filename patterns for your dataset
-        possible_files = [
-            'inventory_data.csv',
-            'urban_inventory.csv', 
-            'inventory_dataset.csv',
-            'main_dataset.csv',
-            'parent_dataset.csv'
-        ]
-        
-        df = None
-        for filename in possible_files:
-            try:
-                df = pd.read_csv(filename)
-                break
-            except FileNotFoundError:
-                continue
-        
-        if df is None:
-            st.error("Dataset file not found. Please ensure your CSV file is uploaded with one of these names:")
-            st.write("• inventory_data.csv")
-            st.write("• urban_inventory.csv") 
-            st.write("• inventory_dataset.csv")
-            st.write("• main_dataset.csv")
-            st.write("• parent_dataset.csv")
-            return None
-            
-        return df
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        return None
+    filename = 'inventory_data.csv'
+    df = pd.read_csv(filename)
+    return df
 
 # Function to get available columns in a table
 def get_table_columns(conn, table_name):

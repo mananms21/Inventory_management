@@ -182,6 +182,52 @@ def run_sql_query(conn, query):
         st.error(f"Query execution error: {str(e)}")
         return pd.DataFrame()
 
+def apply_filters(df, date_range=None, regions=None, categories=None):
+    """Apply filters to the dataframe"""
+    filtered_df = df.copy()
+    
+    # Apply date filter
+    if date_range and 'Date' in df.columns:
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = filtered_df[
+                (pd.to_datetime(filtered_df['Date']).dt.date >= start_date) & 
+                (pd.to_datetime(filtered_df['Date']).dt.date <= end_date)
+            ]
+    
+    # Apply region filter
+    if regions and 'Region' in df.columns:
+        filtered_df = filtered_df[filtered_df['Region'].isin(regions)]
+    
+    # Apply category filter
+    if categories and 'Category' in df.columns:
+        filtered_df = filtered_df[filtered_df['Category'].isin(categories)]
+    
+    return filtered_df
+
+def get_filter_conditions(date_range=None, regions=None, categories=None):
+    """Generate SQL WHERE conditions based on filters"""
+    conditions = []
+    
+    # Date filter
+    if date_range and len(date_range) == 2:
+        start_date, end_date = date_range
+        conditions.append(f"Date BETWEEN '{start_date}' AND '{end_date}'")
+    
+    # Region filter
+    if regions:
+        region_list = "', '".join(regions)
+        conditions.append(f"Region IN ('{region_list}')")
+    
+    # Category filter
+    if categories:
+        category_list = "', '".join(categories)
+        conditions.append(f"Category IN ('{category_list}')")
+    
+    if conditions:
+        return " WHERE " + " AND ".join(conditions)
+    return ""
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏪 Inventory Analytics Dashboard</h1>', unsafe_allow_html=True)
@@ -213,16 +259,18 @@ def main():
     st.sidebar.subheader("🔧 Filters")
     
     # Date range filter
+    date_range = None
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'])
         date_range = st.sidebar.date_input(
             "Select Date Range",
-            value=(df['Date'].min(), df['Date'].max()),
-            min_value=df['Date'].min(),
-            max_value=df['Date'].max()
+            value=(df['Date'].min().date(), df['Date'].max().date()),
+            min_value=df['Date'].min().date(),
+            max_value=df['Date'].max().date()
         )
     
     # Region filter
+    regions = None
     if 'Region' in df.columns:
         regions = st.sidebar.multiselect(
             "Select Regions",
@@ -231,6 +279,7 @@ def main():
         )
     
     # Category filter
+    categories = None
     if 'Category' in df.columns:
         categories = st.sidebar.multiselect(
             "Select Categories",
@@ -238,34 +287,48 @@ def main():
             default=df['Category'].unique()
         )
     
+    # Apply filters to dataframe
+    filtered_df = apply_filters(df, date_range, regions, categories)
+    
+    # Show filter summary
+    if len(filtered_df) != len(df):
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(f"**Filtered Records:** {len(filtered_df):,} / {len(df):,}")
+        st.sidebar.markdown(f"**Filter Applied:** {((len(df) - len(filtered_df)) / len(df) * 100):.1f}% reduction")
+    
     # Main content based on selected page
     if page == "📊 Overview":
-        show_overview(conn, df)
+        show_overview(conn, filtered_df, date_range, regions, categories)
     elif page == "💰 Sales Analysis":
-        show_sales_analysis(conn, df)
+        show_sales_analysis(conn, filtered_df, date_range, regions, categories)
     elif page == "📦 Inventory Management":
-        show_inventory_management(conn, df)
+        show_inventory_management(conn, filtered_df, date_range, regions, categories)
     elif page == "💲 Price Optimization":
-        show_price_optimization(conn, df)
+        show_price_optimization(conn, filtered_df, date_range, regions, categories)
     elif page == "🌤️ External Factors":
-        show_external_factors(conn, df)
+        show_external_factors(conn, filtered_df, date_range, regions, categories)
     elif page == "🔍 Advanced Analytics":
-        show_advanced_analytics(conn, df)
+        show_advanced_analytics(conn, filtered_df, date_range, regions, categories)
 
-def show_overview(conn, df):
+def show_overview(conn, df, date_range=None, regions=None, categories=None):
     """Display overview dashboard"""
     st.header("📊 Inventory Overview")
+    
+    # Get filter conditions for SQL queries
+    filter_conditions = get_filter_conditions(date_range, regions, categories)
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        total_skus = run_sql_query(conn, "SELECT COUNT(DISTINCT Product_ID) as count FROM inventory_facts")
+        query = f"SELECT COUNT(DISTINCT Product_ID) as count FROM inventory_facts{filter_conditions}"
+        total_skus = run_sql_query(conn, query)
         if not total_skus.empty:
             st.metric("Total SKUs", f"{total_skus.iloc[0]['count']:,}")
     
     with col2:
-        total_stores = run_sql_query(conn, "SELECT COUNT(DISTINCT Store_ID) as count FROM inventory_facts")
+        query = f"SELECT COUNT(DISTINCT Store_ID) as count FROM inventory_facts{filter_conditions}"
+        total_stores = run_sql_query(conn, query)
         if not total_stores.empty:
             st.metric("Total Stores", f"{total_stores.iloc[0]['count']:,}")
     
@@ -303,48 +366,53 @@ def show_overview(conn, df):
     
     if 'Inventory_Level' in df.columns and 'Demand_Forecast' in df.columns:
         # Low stock alerts
-        low_stock = run_sql_query(conn, """
+        query = f"""
             SELECT Product_ID, Store_ID, Inventory_Level, Demand_Forecast
             FROM inventory_facts 
-            WHERE Inventory_Level < Demand_Forecast
+            WHERE Inventory_Level < Demand_Forecast{filter_conditions.replace('WHERE', 'AND') if filter_conditions else ''}
             ORDER BY (Demand_Forecast - Inventory_Level) DESC
             LIMIT 10
-        """)
+        """
+        low_stock = run_sql_query(conn, query)
         
         if not low_stock.empty:
             st.warning(f"⚠️ {len(low_stock)} products are understocked")
             with st.expander("View Understocked Items"):
                 st.dataframe(low_stock)
 
-def show_sales_analysis(conn, df):
+def show_sales_analysis(conn, df, date_range=None, regions=None, categories=None):
     """Display sales analysis dashboard"""
     st.header("💰 Sales Performance Analysis")
+    
+    filter_conditions = get_filter_conditions(date_range, regions, categories)
     
     # Top performing products
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("🏆 Top 10 Products by Sales")
-        top_products = run_sql_query(conn, """
+        query = f"""
             SELECT Product_ID, SUM(Units_Sold) as Total_Sales
             FROM inventory_facts
+            {filter_conditions}
             GROUP BY Product_ID
             ORDER BY Total_Sales DESC
             LIMIT 10
-        """)
+        """
+        top_products = run_sql_query(conn, query)
         
         if not top_products.empty:
             fig = px.bar(top_products, x='Product_ID', y='Total_Sales',
                         title="Top 10 Products by Units Sold")
-            # Fixed: Use update_layout instead of update_xaxis
             fig.update_layout(xaxis_tickangle=45)
             st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         st.subheader("💸 Revenue by Product")
-        revenue_query = """
+        revenue_query = f"""
             SELECT Product_ID, SUM(Units_Sold * Price) as Revenue
             FROM inventory_facts
+            {filter_conditions}
             GROUP BY Product_ID
             ORDER BY Revenue DESC
             LIMIT 10
@@ -354,7 +422,6 @@ def show_sales_analysis(conn, df):
         if not revenue_data.empty:
             fig = px.bar(revenue_data, x='Product_ID', y='Revenue',
                         title="Top 10 Products by Revenue")
-            # Fixed: Use update_layout instead of update_xaxis
             fig.update_layout(xaxis_tickangle=45)
             st.plotly_chart(fig, use_container_width=True)
     
@@ -366,16 +433,19 @@ def show_sales_analysis(conn, df):
                      title="Daily Sales Trend")
         st.plotly_chart(fig, use_container_width=True)
 
-def show_inventory_management(conn, df):
+def show_inventory_management(conn, df, date_range=None, regions=None, categories=None):
     """Display inventory management dashboard"""
     st.header("📦 Inventory Management")
     
+    filter_conditions = get_filter_conditions(date_range, regions, categories)
+    
     # Inventory turnover analysis
     st.subheader("🔄 Inventory Turnover Analysis")
-    turnover_query = """
+    turnover_query = f"""
         SELECT Product_ID,
                ROUND(SUM(Units_Sold) / NULLIF(AVG(Inventory_Level), 0), 2) as Turnover_Ratio
         FROM inventory_facts
+        {filter_conditions}
         GROUP BY Product_ID
         ORDER BY Turnover_Ratio DESC
         LIMIT 15
@@ -385,17 +455,17 @@ def show_inventory_management(conn, df):
     if not turnover_data.empty:
         fig = px.bar(turnover_data, x='Product_ID', y='Turnover_Ratio',
                     title="Product Turnover Ratios")
-        # Fixed: Use update_layout instead of update_xaxis
         fig.update_layout(xaxis_tickangle=45)
         st.plotly_chart(fig, use_container_width=True)
     
     # Reorder recommendations
     st.subheader("🔔 Reorder Recommendations")
-    reorder_query = """
+    reorder_query = f"""
         SELECT Store_ID, Product_ID, 
                ROUND(AVG(Units_Sold) * 7, 2) as Reorder_Point,
                MAX(Inventory_Level) as Current_Inventory
         FROM inventory_facts
+        {filter_conditions}
         GROUP BY Store_ID, Product_ID
         HAVING Current_Inventory <= Reorder_Point
         ORDER BY (Reorder_Point - Current_Inventory) DESC
@@ -409,18 +479,21 @@ def show_inventory_management(conn, df):
     else:
         st.success("✅ All products are adequately stocked")
 
-def show_price_optimization(conn, df):
+def show_price_optimization(conn, df, date_range=None, regions=None, categories=None):
     """Display price optimization dashboard"""
     st.header("💲 Price Optimization Analysis")
+    
+    filter_conditions = get_filter_conditions(date_range, regions, categories)
     
     # Price elasticity analysis
     st.subheader("📊 Price vs Sales Analysis")
     
     if 'Price' in df.columns and 'Units_Sold' in df.columns:
         # Sweet spot analysis
-        sweet_spot_query = """
+        sweet_spot_query = f"""
             SELECT Product_ID, Price, AVG(Units_Sold) as Avg_Sales
             FROM inventory_facts
+            {filter_conditions}
             GROUP BY Product_ID, Price
             ORDER BY Product_ID, Avg_Sales DESC
         """
@@ -447,7 +520,7 @@ def show_price_optimization(conn, df):
                     title="Average Sales by Discount Range")
         st.plotly_chart(fig, use_container_width=True)
 
-def show_external_factors(conn, df):
+def show_external_factors(conn, df, date_range=None, regions=None, categories=None):
     """Display external factors analysis"""
     st.header("🌤️ External Factors Impact")
     
@@ -470,7 +543,7 @@ def show_external_factors(conn, df):
                      title="Monthly Sales Pattern")
         st.plotly_chart(fig, use_container_width=True)
 
-def show_advanced_analytics(conn, df):
+def show_advanced_analytics(conn, df, date_range=None, regions=None, categories=None):
     """Display advanced analytics"""
     st.header("🔍 Advanced Analytics")
     

@@ -61,6 +61,14 @@ def load_data():
         st.error(f"Error loading data: {str(e)}")
         return None
 
+def clean_dataframe_for_sql(df):
+    """Clean dataframe for SQLite compatibility"""
+    df_clean = df.copy()
+    for col in df_clean.columns:
+        if df_clean[col].dtype == 'datetime64[ns]':
+            df_clean[col] = df_clean[col].dt.strftime('%Y-%m-%d')
+    return df_clean
+
 # Function to get available columns in a table
 def get_table_columns(conn, table_name):
     """Get column names for a specific table"""
@@ -621,15 +629,11 @@ def get_current_data():
     if 'df_data' in st.session_state:
         return st.session_state.df_data
     else:
-        st.session_state.df_data = load_data()
-        return st.session_state.df_data
-
-def get_current_data():
-    """Get current data from session state or load fresh"""
-    if 'df_data' in st.session_state:
-        return st.session_state.df_data
-    else:
-        st.session_state.df_data = load_data()
+        original_df = load_data()
+        if original_df is not None:
+            st.session_state.df_data = clean_dataframe_for_sql(original_df)
+        else:
+            st.session_state.df_data = None
         return st.session_state.df_data
 
 def show_inventory_management(conn, df, date_range=None, regions=None, categories=None):
